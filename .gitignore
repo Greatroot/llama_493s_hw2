@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Compressed files
+*.zst
+
+# Large JSON files
+*.jsonl
+
 # C extensions
 *.so
 
