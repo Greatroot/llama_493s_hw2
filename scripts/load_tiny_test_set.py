@@ -7,13 +7,13 @@ import random
 """
 
 # Path to the large JSON file
-input_file = '00.jsonl'
+input_file = 'data/subset_data.jsonl'
 
 # Path to the new JSON file
-output_file = 'subset_data.jsonl'
+output_file = 'data/tiny_test_set.jsonl'
 
-# Define the percentage of lines to read (40% in this case)
-percentage_to_read = 0.1
+num_lines = 10
+lines_read = 0
 
 # Open the large JSON file for reading
 with jsonlines.open(input_file, 'r') as input_reader:
@@ -21,8 +21,10 @@ with jsonlines.open(input_file, 'r') as input_reader:
     with jsonlines.open(output_file, 'w') as output_writer:
         # Iterate over each line in the large JSON file
         for obj in input_reader:
-            # Randomly decide whether to include this line or not
-            if random.random() <= percentage_to_read:
+            # Write the selected JSON data to the new JSON file
+            output_writer.write(obj)
+            lines_read += 1
 
-                # Write the selected JSON data to the new JSON file
-                output_writer.write(obj)
+            if num_lines < lines_read:
+                break
+
