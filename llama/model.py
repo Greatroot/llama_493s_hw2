@@ -219,7 +219,7 @@ class Transformer(nn.Module):
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
 
-    # @torch.inference_mode()
+    # Our slightly modified version of the forward function for training
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
@@ -234,5 +234,25 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        output = self.output(h[:, -1, :])  # only compute last logits
+        # TODO: Ask if this is right.
+        output = self.output(h)  # unlike with inference, we pass in the entire h to compute logits for all tokens in our sequence in all of our batches
+                                 # (i.e. we're passing in h of shape [batch_size, seq_len, feature_embedding_dim])
         return output.float()
+
+    # @torch.inference_mode()
+    # def forward(self, tokens: torch.Tensor, start_pos: int):
+    #     _bsz, seqlen = tokens.shape
+    #     h = self.tok_embeddings(tokens)
+    #     self.freqs_cis = self.freqs_cis.to(h.device)
+    #     freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+
+    #     mask = None
+    #     if seqlen > 1:
+    #         mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=tokens.device)
+    #         mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
+
+    #     for layer in self.layers:
+    #         h = layer(h, start_pos, freqs_cis, mask)
+    #     h = self.norm(h)
+    #     output = self.output(h[:, -1, :])  # only compute last logits
+    #     return output.float()

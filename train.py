@@ -8,6 +8,7 @@ import torch
 import fire
 import time
 import json
+import math
 
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -54,8 +55,6 @@ def load(
     tokenizer_path: str,
     local_rank: int,
     world_size: int,
-    max_seq_len: int,
-    max_batch_size: int,
     ckpt_dir: str = None,
 ) -> LLaMA:
     start_time = time.time()
@@ -85,92 +84,89 @@ def load(
     return model, tokenizer
 
 
-def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, verbose=1):
+def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32):
   model.to(device)
-  losses = []
   # We set reduction=None to avoid computing mean on losses (so we get raw losses), this allows us to
   # zero any losses that occured from padding before reducing our 
   criterion = nn.CrossEntropyLoss() # Is softmax + negative log likelihood
 #   optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=decay)
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader))
   for epoch in range(epochs):
-    sum_loss = 0.0
+    losses = []
+    total_loss = 0.
+    log_interval = 1000
+    start_time = time.time()
     for i, batch in enumerate(dataloader):
         # get the inputs; data is a list of string prompts
         prompts = batch['text']
 
-        print(f"size of prompts: {len(prompts)}")
-        print(f"prompts: {prompts}")
+        # print(f"size of prompts: {len(prompts)}")
+        # print(f"prompts: {prompts}")
 
-        bsz = len(prompts)
         params = model.params
-        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
-        max_gen_len = 1  # For training, the model will only be predicting the next token given all the preceeding tokens
-                         # the prompt sample. So we will just make this 1 so that if our batch of prompts is smaller than
-                         # the max_seq_len, then the total_len for padding will just be 1 + the size of the longest prompt
-                         # in our batch.
-
-        # Dim of prompt_tokens: (bsz, len_of_each_prompt)
+        # Dim of prompt_tokens: (batch_size, len_of_each_prompt)
         prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in prompts]
         # print(f"prompt_tokens = {prompt_tokens}")
         # print(f"len of first prompt tokens = {len(prompt_tokens[0])}")
 
-        min_prompt_size = min([len(t) for t in prompt_tokens])
         max_prompt_size = max([len(t) for t in prompt_tokens])
 
-        total_len = min(params.max_seq_len, max_gen_len + max_prompt_size)
+        total_len = min(params.max_seq_len, max_prompt_size)
         # print(f"total_len = {total_len}")
 
-        tokens = torch.full((bsz, total_len), tokenizer.pad_id).to(device).long()
+        tokens = torch.full((batch_size, total_len), tokenizer.pad_id).to(device).long()
         for k, t in enumerate(prompt_tokens):
             tokens[k, : len(t)] = torch.tensor(t).long()  # k represents the kth prompt and t represents the position in that sentence
+        
+        inputs = tokens[:, :-2]
+        targets = tokens[:, 1:]
         # input_text_mask = tokens != tokenizer.pad_id  TODO: Remove
-        prev_pos = 0
         # print(f"shape of tokens: {tokens.shape}")
-        for cur_pos in range(1, total_len - 1):
-            """ For each token (not including the first token, which we will use first as context)"""
-             # zero the parameter gradients
-            optimizer.zero_grad()
+            
+        # zero the parameter gradients
+        optimizer.zero_grad()
 
-            print(f"prev_pos:cur_pos = {tokens[:, prev_pos:cur_pos]}")
-            logits = model.forward(tokens[:, prev_pos:cur_pos], prev_pos)  # TODO: Figure out, do we want to start from prev_pos as context or the beginning of the sentence?
-            print(f"logits grad_fn = {logits.grad_fn}")
-            print(f"logits = {logits}")
-            # print(f"tokens[:, cur_pos] = {tokens[:, cur_pos]}")
-            loss = criterion(logits, tokens[:, cur_pos+1])
-            print(f"current tokens = {tokens[:, cur_pos+1]}")
-            print(f"loss func grad func = {loss.grad_fn}")
-            print(f"unreduced loss = {loss}")
+        logits = model.forward(inputs, 0)
 
-            # Zero out any losses that were calculated from padding tokens
-            # loss_mask = tokens[:, cur_pos] != tokenizer.pad_id
-            # # loss_mask tensor([ True,  True,  True,  True,  True, False])
+        loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1))
+        print(f"unreduced loss = {loss}")
 
-            # # loss_masked = loss.where(loss_mask, torch.tensor(0.0))
-            # # loss_masked tensor([ 0.0010, -0.3000,  0.9000,  0.7000,  0.6000,  0.0000])
+        # Zero out any losses that were calculated from padding tokens
+        loss_mask = targets.reshape(-1) != tokenizer.pad_id
+        # loss_mask tensor([ True,  True,  True,  True,  True, False])
 
-            # # loss = loss_masked.mean()  might be better to just calculate mean() instead of doing it manually below
-            # # loss = loss_masked.sum() / loss_mask.sum()
+        # loss_masked = loss.where(loss_mask, torch.tensor(0.0))
+        # loss_masked tensor([ 0.0010, -0.3000,  0.9000,  0.7000,  0.6000,  0.0000])
 
-            # loss_masked = torch.masked_select(loss, loss_mask)
-            # loss_masked.mean()
+        # loss = loss_masked.mean()  might be better to just calculate mean() instead of doing it manually below
+        # loss = loss_masked.sum() / loss_mask.sum()
 
-            loss.backward()  # autograd magic, computes all the partial derivatives
+        loss_masked = torch.masked_select(loss, loss_mask)
+        loss_masked.mean()
 
-            nn.utils.clip_grad_norm_(model.parameters(), clip)
-            optimizer.step() # takes a step in negative gradient direction
+        loss.backward()  # autograd magic, computes all the partial derivatives
 
-            # print statistics
-            losses.append(loss.item())
-            sum_loss += loss.item()
-            if i % 100 == 99:    # print every 100 mini-batches
-                if verbose:
-                    print('[%d, %5d] loss: %.3f' %
-                        (epoch + 1, i + 1, sum_loss / 100))
-                sum_loss = 0.0
+        nn.utils.clip_grad_norm_(model.parameters(), clip)
+        optimizer.step() # takes a step in negative gradient direction
 
-            prev_pos = cur_pos
+        # Total loss over epoch and print statistics
+        total_loss += loss.item()
+        if batch % log_interval == 0 and batch > 0:
+            lr = scheduler.get_last_lr()[0]
+            # lr = get_lr(optimizer)
+            ms_per_batch = (time.time() - start_time) * 1000 / log_interval
+            cur_loss = total_loss / log_interval
+            ppl = math.exp(cur_loss)
+            print(f'| epoch {epoch:3d} | {batch:5d}/{len(dataloader):5d} batches | '
+                  f'lr {lr:02.2f} | ms/batch {ms_per_batch:5.2f} | '
+                  f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
+            total_loss = 0
+            start_time = time.time()
+        
+        if batch != 0 and batch % 3000 == 0:
+          scheduler.step()
 
   return losses
 
@@ -180,8 +176,6 @@ def main(
     ckpt_dir: str = None,
     temperature: float = 0.8,
     top_p: float = 0.95,
-    # max_seq_len: int = 512,
-    # max_batch_size: int = 32,
 ):
     # train_path = 'data/train.jsonl'  # TODO:
     train_path = 'data/tiny_test_set.jsonl'
@@ -200,23 +194,21 @@ def main(
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     norm_eps: float = 1e-5
 
-    max_batch_size: int = 32
-    max_seq_len: int = 512
+    epochs = 10
+    batch_size: int = 32
 
     # Hyperparams for LLama Transformer implementation
     model_args: ModelArgs = ModelArgs(
-        max_seq_len=max_seq_len, 
         vocab_size=vocab_size, 
         dim=dim, n_layers=n_layers, 
         n_heads=n_heads, 
         multiple_of=multiple_of, 
-        norm_eps=norm_eps, 
-        max_batch_size=max_batch_size  # TODO: change the max_seq_len and max_batch_size(?)
+        norm_eps=norm_eps
     )
 
     print(f"tokenizer_path = {tokenizer_path}")
     model, tokenizer = load(
-        model_args, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size, ckpt_dir
+        model_args, tokenizer_path, local_rank, world_size, ckpt_dir
     )
     print(f"tokenizer n_words = {tokenizer.n_words}")
 
@@ -228,7 +220,7 @@ def main(
 
     # Train the model TODO
     # It should be as simple as batching up multiple prompts (need to split)
-    train(model, tokenizer, train_dataloader, epochs=1)
+    train(model, tokenizer, train_dataloader, epochs=epochs, batch_size=batch_size)
 
 
 if __name__ == "__main__":
