@@ -39,15 +39,15 @@ def setup_model_parallel() -> Tuple[int, int]:
     return local_rank, world_size
 
 
-def sample_top_p(probs, p):
-    probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
-    probs_sum = torch.cumsum(probs_sort, dim=-1)
-    mask = probs_sum - probs_sort > p
-    probs_sort[mask] = 0.0
-    probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
-    next_token = torch.multinomial(probs_sort, num_samples=1)
-    next_token = torch.gather(probs_idx, -1, next_token)
-    return next_token
+# def sample_top_p(probs, p):
+#     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
+#     probs_sum = torch.cumsum(probs_sort, dim=-1)
+#     mask = probs_sum - probs_sort > p
+#     probs_sort[mask] = 0.0
+#     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
+#     next_token = torch.multinomial(probs_sort, num_samples=1)
+#     next_token = torch.gather(probs_idx, -1, next_token)
+#     return next_token
 
 
 def load(
@@ -86,6 +86,7 @@ def load(
 
 def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32):
   model.to(device)
+  model.train()
   # We set reduction=None to avoid computing mean on losses (so we get raw losses), this allows us to
   # zero any losses that occured from padding before reducing our 
   criterion = nn.CrossEntropyLoss() # Is softmax + negative log likelihood
@@ -120,7 +121,7 @@ def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95
         for k, t in enumerate(prompt_tokens):
             tokens[k, : len(t)] = torch.tensor(t).long()  # k represents the kth prompt and t represents the position in that sentence
         
-        inputs = tokens[:, :-2]
+        inputs = tokens[:, :-1]
         targets = tokens[:, 1:]
         # input_text_mask = tokens != tokenizer.pad_id  TODO: Remove
         # print(f"shape of tokens: {tokens.shape}")
@@ -128,13 +129,13 @@ def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95
         # zero the parameter gradients
         optimizer.zero_grad()
 
+        print(f"shape of inputs = {inputs.shape}")
+        print(f"shape of targets = {targets.shape}")
         logits = model.forward(inputs, 0)
 
         loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1))
         print(f"unreduced loss = {loss}")
 
-        # Zero out any losses that were calculated from padding tokens
-        loss_mask = targets.reshape(-1) != tokenizer.pad_id
         # loss_mask tensor([ True,  True,  True,  True,  True, False])
 
         # loss_masked = loss.where(loss_mask, torch.tensor(0.0))
@@ -143,8 +144,8 @@ def train(model, tokenizer, dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95
         # loss = loss_masked.mean()  might be better to just calculate mean() instead of doing it manually below
         # loss = loss_masked.sum() / loss_mask.sum()
 
-        loss_masked = torch.masked_select(loss, loss_mask)
-        loss_masked.mean()
+        # loss_masked = torch.masked_select(loss, loss_mask)
+        # loss_masked.mean()
 
         loss.backward()  # autograd magic, computes all the partial derivatives
 
@@ -187,15 +188,15 @@ def main(
         sys.stdout = open(os.devnull, "w")
 
     # Model params
-    dim: int = 512
-    n_layers: int = 8  # changed from 8
-    n_heads: int = 8
+    dim: int = 32  # Originally 512
+    n_layers: int = 1  # originally 8
+    n_heads: int = 1  # originally 8
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     norm_eps: float = 1e-5
 
     epochs = 10
-    batch_size: int = 32
+    batch_size: int = 8
 
     # Hyperparams for LLama Transformer implementation
     model_args: ModelArgs = ModelArgs(
@@ -203,7 +204,8 @@ def main(
         dim=dim, n_layers=n_layers, 
         n_heads=n_heads, 
         multiple_of=multiple_of, 
-        norm_eps=norm_eps
+        norm_eps=norm_eps,
+        max_seq_len=512  # originally 2048
     )
 
     print(f"tokenizer_path = {tokenizer_path}")

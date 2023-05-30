@@ -12,7 +12,7 @@ input_file = 'data/subset_data.jsonl'
 # Path to the new JSON file
 output_file = 'data/tiny_test_set.jsonl'
 
-num_lines = 10
+num_lines = 512
 lines_read = 0
 
 # Open the large JSON file for reading
