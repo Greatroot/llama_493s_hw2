@@ -84,29 +84,25 @@ class Attention(nn.Module):
             args.dim,
             args.n_heads * self.head_dim,
             bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
+            gather_output=False,  # Change to original model (removed placeholder lambda x : x)
         )
         self.wk = ColumnParallelLinear(
             args.dim,
             args.n_heads * self.head_dim,
             bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
+            gather_output=False,  # Change to original model (removed placeholder lambda x : x)
         )
         self.wv = ColumnParallelLinear(
             args.dim,
             args.n_heads * self.head_dim,
             bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
+            gather_output=False,  # Change to original model (removed placeholder lambda x : x)
         )
         self.wo = RowParallelLinear(
             args.n_heads * self.head_dim,
             args.dim,
             bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x,
+            input_is_parallel=True,  # Change to original model (removed placeholder lambda x : x)
         )
 
         self.cache_k = torch.zeros(
@@ -162,13 +158,13 @@ class FeedForward(nn.Module):
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
         self.w1 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+            dim, hidden_dim, bias=False, gather_output=False  # Change to original model (removed placeholder lambda x : x)
         )
         self.w2 = RowParallelLinear(
-            hidden_dim, dim, bias=False, input_is_parallel=True, init_method=lambda x: x
+            hidden_dim, dim, bias=False, input_is_parallel=True  # Change to original model (removed placeholder lambda x : x)
         )
         self.w3 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+            dim, hidden_dim, bias=False, gather_output=False  # Change to original model (removed placeholder lambda x : x)
         )
 
     def forward(self, x):
@@ -203,7 +199,7 @@ class Transformer(nn.Module):
         self.n_layers = params.n_layers
 
         self.tok_embeddings = ParallelEmbedding(
-            params.vocab_size, params.dim, init_method=lambda x: x
+            params.vocab_size, params.dim  # Change to original model (removed placeholder lambda x : x)
         )
 
         self.layers = torch.nn.ModuleList()
@@ -212,7 +208,7 @@ class Transformer(nn.Module):
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = ColumnParallelLinear(
-            params.dim, params.vocab_size, bias=False, init_method=lambda x: x
+            params.dim, params.vocab_size, bias=False  # Change to original model (removed placeholder lambda x : x)
         )
 
         self.freqs_cis = precompute_freqs_cis(
@@ -222,21 +218,28 @@ class Transformer(nn.Module):
     # Our slightly modified version of the forward function for training
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
+        # print(f"seqlen: {seqlen}")
         h = self.tok_embeddings(tokens)
+        # print(f"shape of h at beginning: {h.shape}")
+        # print(f"h at the beginning of the forward func: {h}")
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        # print(f"freqs_cis: {freqs_cis}")
 
         mask = None
         if seqlen > 1:
             mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=tokens.device)
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
+        # print(f"mask: {mask}")
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
+        # print(f"what is h? {h}")
         # TODO: Ask if this is right.
         output = self.output(h)  # unlike with inference, we pass in the entire h to compute logits for all tokens in our sequence in all of our batches
                                  # (i.e. we're passing in h of shape [batch_size, seq_len, feature_embedding_dim])
+        # print(f"output inside the transformer: {output}")
         return output.float()
 
     # @torch.inference_mode()
