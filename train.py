@@ -23,8 +23,8 @@ from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
 from dataset_stream import PileIterableDataset
 
-device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def setup_model_parallel() -> Tuple[int, int]:
@@ -105,9 +105,9 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         # print(f"batch = {batch}")
         prompts = batch['text']
 
-        print(f"size of prompts: {len(prompts)}")
+        # print(f"size of prompts: {len(prompts)}")
         # print(f"prompts: {prompts}")
-        print(f"type of elements in prompts: {type(prompts[0])}")
+        # print(f"type of elements in prompts: {type(prompts[0])}")
 
         params = model.params
 
@@ -151,8 +151,8 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         # print(f"logits.reshape(-1, vocab_size) = {logits.reshape(-1, params.vocab_size)}")
         # print(f"targets.reshape(-1) = {targets.reshape(-1)}")
         loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1))
-        loss = torch.autograd.Variable(loss, requires_grad=True)
-        print(f"unreduced loss = {loss}")
+        # loss = torch.autograd.Variable(loss, requires_grad=True)
+        # print(f"unreduced loss = {loss}")
 
         # loss_mask tensor([ True,  True,  True,  True,  True, False])
 
@@ -165,7 +165,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         # loss_masked = torch.masked_select(loss, loss_mask)
         # loss_masked.mean()
 
-        loss.backward()  # autograd magic, computes all the partial derivatives
+        loss.backward(retain_graph=True)  # autograd magic, computes all the partial derivatives
 
         nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step() # takes a step in negative gradient direction
@@ -237,15 +237,16 @@ def main(
         sys.stdout = open(os.devnull, "w")
 
     # Model params
-    dim: int = 512  # Originally 512
-    n_layers: int = 4  # originally 8
-    n_heads: int = 4  # originally 8
+    dim: int = 128  # Originally 512
+    n_layers: int = 1  # originally 8
+    n_heads: int = 1  # originally 8
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     norm_eps: float = 1e-5
 
     epochs = 10
     batch_size: int = 2
+    lr=3.0e-4
 
     # Hyperparams for LLama Transformer implementation
     model_args: ModelArgs = ModelArgs(
@@ -272,7 +273,7 @@ def main(
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Train the model
-    train(model, tokenizer, train_dataloader, val_dataloader, epochs=epochs, batch_size=batch_size)
+    train(model, tokenizer, train_dataloader, val_dataloader, lr=lr, epochs=epochs, batch_size=batch_size)
 
 
 if __name__ == "__main__":
