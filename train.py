@@ -85,7 +85,7 @@ def load(
     return model, tokenizer
 
 
-def train(model, tokenizer, train_dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32):
+def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32):
 # def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32):
   model.to(device)
   model.train()
@@ -105,9 +105,9 @@ def train(model, tokenizer, train_dataloader, epochs=1, lr=0.01, beta1=0.9, beta
         # print(f"batch = {batch}")
         prompts = batch['text']
 
-        # print(f"size of prompts: {len(prompts)}")
+        print(f"size of prompts: {len(prompts)}")
         # print(f"prompts: {prompts}")
-        # print(f"type of elements in prompts: {type(prompts[0])}")
+        print(f"type of elements in prompts: {type(prompts[0])}")
 
         params = model.params
 
@@ -245,7 +245,7 @@ def main(
     norm_eps: float = 1e-5
 
     epochs = 10
-    batch_size: int = 1
+    batch_size: int = 2
 
     # Hyperparams for LLama Transformer implementation
     model_args: ModelArgs = ModelArgs(
@@ -265,19 +265,14 @@ def main(
     
     print(f"tokenizer n_words = {tokenizer.n_words}")
 
-    # Load in the training and testing dataset TODO
-    # train_dataset = PileIterableDataset(train_path)
-    generator = torch.Generator().manual_seed(42)
+    # Load in our data and split it into train, val, test datasets
+    train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=train_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    dataset = load_dataset('json', data_files=train_path, split='train').with_format('torch')
-    # train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1], generator)
-    train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    # val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    # Train the model TODO
-    # It should be as simple as batching up multiple prompts (need to split)
-    train(model, tokenizer, train_dataloader, epochs=epochs, batch_size=batch_size)
+    # Train the model
+    train(model, tokenizer, train_dataloader, val_dataloader, epochs=epochs, batch_size=batch_size)
 
 
 if __name__ == "__main__":
