@@ -21,51 +21,22 @@ from datasets import load_dataset
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
-from dataset_stream import PileIterableDataset
+# from dataset_stream import PileIterableDataset  TODO: Remove
 
 # device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def setup_model_parallel() -> Tuple[int, int]:
-    local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    world_size = int(os.environ.get("WORLD_SIZE", -1))
-
-    torch.distributed.init_process_group("nccl")
-    initialize_model_parallel(world_size)
-    torch.cuda.set_device(local_rank)
-
-    # seed must be the same in all processes
-    torch.manual_seed(1)
-    return local_rank, world_size
-
-
-# def sample_top_p(probs, p):
-#     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
-#     probs_sum = torch.cumsum(probs_sort, dim=-1)
-#     mask = probs_sum - probs_sort > p
-#     probs_sort[mask] = 0.0
-#     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
-#     next_token = torch.multinomial(probs_sort, num_samples=1)
-#     next_token = torch.gather(probs_idx, -1, next_token)
-#     return next_token
-
-
 def load(
     model_args: ModelArgs,
     tokenizer_path: str,
-    local_rank: int,
-    world_size: int,
     ckpt_dir: str = None,
 ) -> LLaMA:
     start_time = time.time()
     if ckpt_dir is not None:
         # If there are checkpoints provided, then load them in
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
-        assert world_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {world_size}"
-        ckpt_path = checkpoints[local_rank]
+        ckpt_path = checkpoints
         print("Loading")
         checkpoint = torch.load(ckpt_path, map_location="cpu")
 
@@ -165,7 +136,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         # loss_masked = torch.masked_select(loss, loss_mask)
         # loss_masked.mean()
 
-        loss.backward(retain_graph=True)  # autograd magic, computes all the partial derivatives
+        loss.backward()  # autograd magic, computes all the partial derivatives
 
         nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step() # takes a step in negative gradient direction
@@ -179,7 +150,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
             cur_loss = total_loss / log_interval
             ppl = math.exp(cur_loss)
             print(f'| epoch {epoch:3d} | {i:5d}/{len(train_dataloader):5d} batches | '
-                  f'lr {lr:02.2f} | ms/batch {ms_per_batch:5.2f} | '
+                  f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
                   f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
             total_loss = 0
             start_time = time.time()
@@ -223,18 +194,12 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
 
 def main(
     tokenizer_path: str,
-    ckpt_dir: str = None,
-    temperature: float = 0.8,
-    top_p: float = 0.95,
+    ckpt_dir: str = None
 ):
     # train_path = 'data/train.jsonl'  # TODO:
-    train_path = 'data/test.jsonl'
+    train_path = 'data/subset_data.jsonl'
     # test_path = 'data/test.jsonl'
     # test_path = 'data/' TODO:
-
-    local_rank, world_size = setup_model_parallel()
-    if local_rank > 0:
-        sys.stdout = open(os.devnull, "w")
 
     # Model params
     dim: int = 128  # Originally 512
@@ -261,7 +226,7 @@ def main(
 
     print(f"tokenizer_path = {tokenizer_path}")
     model, tokenizer = load(
-        model_args, tokenizer_path, local_rank, world_size, ckpt_dir
+        model_args, tokenizer_path, ckpt_dir
     )
     
     print(f"tokenizer n_words = {tokenizer.n_words}")
@@ -277,4 +242,5 @@ def main(
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    tokenizer_path = './tokenizer.model'
+    main(tokenizer_path=tokenizer_path)
