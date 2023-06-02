@@ -6,6 +6,10 @@ __pycache__/
 # Compressed files
 *.zst
 
+# checkpoint files:
+*.pt
+*.pth
+
 # Large JSON files
 *.jsonl
 
