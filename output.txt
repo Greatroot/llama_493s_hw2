@@ -1,0 +1,36 @@
+working dir = /root/llama_493s_hw2
+tokenizer_path = ./tokenizer.model
+tokenizer_path in load func = ./tokenizer.model
+model path = ./tokenizer.model
+current working dir = /root/llama_493s_hw2
+GPU memory used during model allocation: 0.0: %fGB
+GPU memory used during model allocation: 0.0: %fGB
+GPU memory used during model allocation: 0.035654144: %fGB
+GPU memory used during model allocation: 0.035654144: %fGB
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     1/   13 batches | lr 0.00300 | ms/batch 1189.54 | loss 20.96 | ppl 1260957579.26
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     2/   13 batches | lr 0.00300 | ms/batch 136.90 | loss 10.27 | ppl 28761.97
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     3/   13 batches | lr 0.00300 | ms/batch 157.96 | loss 10.05 | ppl 23165.64
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     4/   13 batches | lr 0.00300 | ms/batch 89.86 | loss  9.69 | ppl 16095.68
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     5/   13 batches | lr 0.00300 | ms/batch 193.11 | loss  9.29 | ppl 10830.35
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     6/   13 batches | lr 0.00300 | ms/batch 147.56 | loss  9.00 | ppl  8131.53
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     7/   13 batches | lr 0.00300 | ms/batch 110.86 | loss  8.64 | ppl  5649.89
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     8/   13 batches | lr 0.00300 | ms/batch 128.97 | loss  8.49 | ppl  4884.58
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |     9/   13 batches | lr 0.00300 | ms/batch 128.92 | loss  8.26 | ppl  3850.13
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |    10/   13 batches | lr 0.00300 | ms/batch 178.16 | loss  8.03 | ppl  3076.24
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |    11/   13 batches | lr 0.00300 | ms/batch 117.26 | loss  7.83 | ppl  2503.49
+GPU memory used during model allocation: 2.250746368: %fGB
+| epoch   0 |    12/   13 batches | lr 0.00300 | ms/batch 94.51 | loss  7.80 | ppl  2434.38
+Avg LOSS train 0.0 valid 7.742552757263184
+save path: ./checkpoints/0_0.0_7.74.pt
+GPU memory used during model allocation: 9.603757056: %fGB
