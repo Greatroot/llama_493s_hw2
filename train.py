@@ -9,6 +9,8 @@ import fire
 import time
 import json
 import math
+import tqdm
+import argparse
 
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -16,15 +18,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+import matplotlib.pyplot as plt
+
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 from datasets import load_dataset
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
-# from dataset_stream import PileIterableDataset  TODO: Remove
+parser = argparse.ArgumentParser(description='Training code for transformer')
+parser.add_argument('tokenizer_path', type=str, help='Path to tokeinizer')
+parser.add_argument('save_path', type=str, help='Path to folder to save results')
+parser.add_argument('data_path', type=str, help='Path to the data file you want to train on')
+parser.add_argument('--ckpt_path', type=str, help='Path to checkpoint if you want to load one in')
+parser.add_argument('--max_seq_len', type=int, default=256, help='The max number of tokens per sequence')
+parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
+parser.add_argument('--num_epochs', type=int, default=7, help='Number of epochs to train for')
+parser.add_argument('--dim_size', type=int, default=128, help='Embedding dimension for the Embedder in our Transformer')
 
-# device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+args = parser.parse_args()
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters())
 
 
 def load(
@@ -32,7 +49,6 @@ def load(
     tokenizer_path: str,
     ckpt_dir: str = None,
 ) -> LLaMA:
-    start_time = time.time()
     if ckpt_dir is not None:
         # If there are checkpoints provided, then load them in
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
@@ -56,35 +72,59 @@ def load(
     return model, tokenizer
 
 
-def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, temperature=0, top_p=0.95, batch_size=32, save_path=None):
+def eval(model, tokenizer, test_loader):
+    losses = 0.
+    with torch.no_grad():
+        criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
+        for i, vdata in tqdm.tqdm(enumerate(test_loader), total=len(test_loader)):
+            prompts = vdata['text']
+            params = model.params
+            batch_size = len(prompts)
+
+            prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+            max_prompt_size = max([len(t) for t in prompt_tokens])
+
+            total_len = min(params.max_seq_len, max_prompt_size)
+
+            # Pad our batch of sample tokens so that they are all the same length
+            tokens = torch.full((batch_size, total_len), tokenizer.eos_id).to(device).long()
+            for k, t in enumerate(prompt_tokens):
+                # k represents the kth prompt and t represents the position in that sentence
+                if len(t) > params.max_seq_len:
+                    tokens[k, :] = torch.tensor(t[:total_len]).long()
+                else:
+                    tokens[k, : len(t)] = torch.tensor(t).long()
+            
+            inputs = tokens[:, :-1]
+            targets = tokens[:, 1:]
+
+            outputs = model.forward(inputs, 0)
+
+            loss = criterion(outputs.reshape(-1, params.vocab_size), targets.reshape(-1))
+            losses += loss.item()
+        losses /= len(test_loader)
+    return losses
+
+
+def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
   model.to(device)
   model.train()
-  # We set reduction=None to avoid computing mean on losses (so we get raw losses), this allows us to
-  # zero any losses that occured from padding before reducing our 
   criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
-  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_dataloader))
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_loader))
 
   train_losses = []
   val_losses = []
-  
-  print(f"GPU memory allocated before starting training loop: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-#   print(f"GPU memory: {torch.cuda.memory_summary()}")
 
   for epoch in range(epochs):
     total_loss = 0.
+    batch_loss = 0.
     log_interval = 1  # TODO: change back to 100
     start_time = time.time()
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
-    print(f"GPU memory allocated at beginning of epoch: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
-    for i, batch in enumerate(train_dataloader):
-        # get the inputs; data is a list of string prompts
-        # print(f"batch = {batch}")
+    for i, batch in enumerate(train_loader):
+        # get the inputs; batch is a list of string prompts. We convert these to a padded batch of 
+        # tokens before passing into our model.
         prompts = batch['text']
-        
-        # print(f"GPU memory used during epoch {epoch} and batch {i}: {torch.cuda.memory_allocated(0) / 1e9}: %fGB") TODO: Remove
-
         params = model.params
 
         # Dim of prompt_tokens: (batch_size, len_of_each_prompt)
@@ -119,63 +159,27 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         optimizer.step() # takes a step in negative gradient direction
 
         # Total loss over epoch and print statistics
-        total_loss += loss.item()
+        batch_loss += loss.item()
         if i % log_interval == 0 and i > 0:
             lr = scheduler.get_last_lr()[0]
             # lr = get_lr(optimizer)
             ms_per_batch = (time.time() - start_time) * 1000 / log_interval
-            cur_loss = total_loss / log_interval
+            cur_loss = batch_loss / log_interval
             ppl = math.exp(cur_loss)
-            # print(f"GPU memory: {torch.cuda.memory_summary()}")
-            print(f"GPU memory allocated at end of batch: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-            # print(f"GPU memory: {torch.cuda.memory_summary()}")
 
-            print(f'| epoch {epoch:3d} | {i:5d}/{len(train_dataloader):5d} batches | '
+            print(f'| epoch {epoch:3d} | {i:5d}/{len(train_loader):5d} batches | '
                   f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
                   f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
-            train_losses.append(cur_loss)
-            total_loss = 0
+            batch_loss = 0
             start_time = time.time()
         
         if i != 0 and i % 3000 == 0:
           scheduler.step()
 
     # At the end of every epoch, test our model against our validation data
-    running_vloss = 0.0
-    print(f"GPU memory before running validation loop: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    with torch.no_grad():
-        for i, vdata in enumerate(val_dataloader):
-            prompts = vdata['text']
-            params = model.params
-
-            prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in prompts]
-            max_prompt_size = max([len(t) for t in prompt_tokens])
-
-            total_len = min(params.max_seq_len, max_prompt_size)
-
-            # Pad our batch of sample tokens so that they are all the same length
-            tokens = torch.full((batch_size, total_len), tokenizer.eos_id).to(device).long()
-            for k, t in enumerate(prompt_tokens):
-                # k represents the kth prompt and t represents the position in that sentence
-                if len(t) > params.max_seq_len:
-                    tokens[k, :] = torch.tensor(t[:total_len]).long()
-                else:
-                    tokens[k, : len(t)] = torch.tensor(t).long()
-            
-            inputs = tokens[:, :-1]
-            targets = tokens[:, 1:]
-
-            voutputs = model.forward(inputs, 0)
-
-            vloss = criterion(voutputs.reshape(-1, params.vocab_size), targets.reshape(-1))
-            running_vloss += vloss.item()
-
-        avg_vloss = running_vloss / (i + 1)
-        val_losses.append(avg_vloss)
-        print('Avg LOSS train {} valid {}'.format(total_loss / len(train_dataloader), avg_vloss))
-
-    print(f"GPU memory allocated right before saving: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
+    val_loss = eval(model, tokenizer, val_loader)
+    val_losses.append(val_loss)
+    print('Avg LOSSES | train loss: {} | valid loss: {}'.format(total_loss / len(train_loader), val_loss))
 
     # save a checkpoint
     # filename format: {epoch}_{training loss}_{validation loss}.pt
@@ -184,75 +188,67 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                # 'loss': avg_vloss,
-                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_dataloader), loss)))
-        
-    print(f"GPU memory allocated after saving: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
+                'loss': val_loss,
+                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_loader), val_loss)))
 
+
+  # Create a plot using plt of the total_losses and the epoch_validation and save it to args.save_path
+  plt.cla(); plt.clf()
+  plt.plot(train_losses, label='train_loss', color='blue')
+  plt.plot(val_losses, label='val_loss', color='orange')
+  plt.xlabel('Epochs')
+  plt.ylabel('Loss')
+  plt.legend()
+  plt.savefig(f'{args.save_path}/final_losses.png')
+  
   return train_losses, val_losses
 
 
-def main(
-    tokenizer_path: str,
-    ckpt_path: str = None,
-    save_path: str = None,
-):
-    # train_path = 'data/subset_data.jsonl'
-    train_path = 'data/tiny_test_set.jsonl'  # TODO: Remove
-    print(f"working dir = {os.getcwd()}")
-
+def main():
+    print(f"args.save_path = {args}")
+    if not os.path.exists(args.save_path):
+        os.makedirs(args.save_path)
+    elif not os.path.isdir(args.save_path):
+        raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-    dim: int = 128  # Originally 512
-    n_layers: int = 1  # originally 8
-    n_heads: int = 1  # originally 8
-    vocab_size: int = -1  # defined later by tokenizer
-    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
-    norm_eps: float = 1e-5
-
-    epochs = 10
-    batch_size: int = 16
     lr=3.0e-3
-
-    # Hyperparams for LLama Transformer implementation
     model_args: ModelArgs = ModelArgs(
-        vocab_size=vocab_size, 
-        dim=dim, 
-        n_layers=n_layers, 
-        n_heads=n_heads, 
-        multiple_of=multiple_of, 
-        norm_eps=norm_eps,
-        max_seq_len=512  # originally 2048
+        dim=args.dim_size,
+        n_layers=2,
+        n_heads=2,
+        max_seq_len=args.max_seq_len,
+        multiple_of=256, # make SwiGLU hidden layer size multiple of large power of 2
+        norm_eps=1e-5
     )
 
-    print(f"tokenizer_path = {tokenizer_path}")
     model, tokenizer = load(
-        model_args, tokenizer_path, ckpt_path
+        model_args, args.tokenizer_path, args.ckpt_path
     )
-
-    # Log the amount of GPU memory that is being consumed by loading the model on GPU
-    print(f"GPU memory used during model allocation: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
-
+    
+    print(f"Model Summary: "
+          f"\tembedding dim = {args.dim_size}"
+          f"\tnum_layers = {model_args.n_layers}"
+          f"\tn_heads = {model_args.n_heads}"
+          f"\tmax_seq_len = {args.max_seq_len}"
+          f"\tnum_params (size of model) = {count_parameters(model)}"
+          )
 
     # Load in our data and split it into train, val, test datasets
-    train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=train_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    # print(f"GPU memory: {torch.cuda.memory_summary()}")
-    print(f"GPU memory used after dataloaders: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-
-
+    train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=args.data_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     # Train the model
-    train(model, tokenizer, train_dataloader, val_dataloader, lr=lr, epochs=epochs, batch_size=batch_size, save_path=save_path)
+    start_time = time.time()
+    train_losses, val_losses = train(model, tokenizer, train_dataloader, val_dataloader, lr=lr, epochs=args.num_epochs, batch_size=args.batch_size, save_path=args.save_path)
+    end_time = time.time()
+    print(f"Training on 3090 took {end_time - start_time} seconds")
+    print(f"Final validation loss on model was: {val_losses[-1]}")
+    print(f"train_losses = {train_losses}")
+    print(f"val_losses = {val_losses}")
 
 
 if __name__ == "__main__":
-    tokenizer_path = './tokenizer.model'
-    ckpt_path = None
-    save_path = './checkpoints'
-    main(tokenizer_path=tokenizer_path, ckpt_path=None, save_path=save_path)
+    main()
