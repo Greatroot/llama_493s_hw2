@@ -9,10 +9,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-import xformers.ops as xops
-
-# TODO: Remove
-# import fairscale.nn.model_parallel.initialize as fs_init
+import fairscale.nn.model_parallel.initialize as fs_init
 # from fairscale.nn.model_parallel.layers import (
 #     ParallelEmbedding,
 #     RowParallelLinear,
@@ -31,28 +28,6 @@ class ModelArgs:
 
     max_batch_size: int = 32
     max_seq_len: int = 2048
-
-
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    return xq_out.type_as(xq), xk_out.type_as(xk)
-
-
-def xformers_attn(xq, xk, xv, is_causal):
-    mask = None
-    if is_causal:
-        mask = xops.LowerTriangularMask()
-    return xops.memory_efficient_attention(
-        xq, xk, xv, attn_bias=mask
-    )
 
 
 class RMSNorm(torch.nn.Module):
@@ -102,43 +77,41 @@ class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
 
-        self.n_local_heads = args.n_heads  # Removed this because world_size = 1 for non-parallel code: // fs_init.get_model_parallel_world_size()
+        self.n_local_heads = args.n_heads  # // fs_init.get_model_parallel_world_size()
         self.head_dim = args.dim // args.n_heads
 
-        self.in_proj = nn.Linear(
+        self.wq = nn.Linear(
             args.dim,
-            3 * args.n_heads * self.head_dim,
+            args.n_heads * self.head_dim,
             bias=False
         )
-
-        # Got rid of the 3 seperate matrices 
-        # self.wq = nn.Linear(
-        #     args.dim,
-        #     args.n_heads * self.head_dim,
-        #     bias=False
-        # )
-        # self.wk = nn.Linear(
-        #     args.dim,
-        #     args.n_heads * self.head_dim,
-        #     bias=False
-        # )
-        # self.wv = nn.Linear(
-        #     args.dim,
-        #     args.n_heads * self.head_dim,
-        #     bias=False
-        # )
-        self.out_proj = nn.Linear(
+        self.wk = nn.Linear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False
+        )
+        self.wv = nn.Linear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False
+        )
+        self.wo = nn.Linear(
             args.n_heads * self.head_dim,
             args.dim,
             bias=False
         )
 
-        self.attn_fn = xformers_attn
-
+        # TODO: Remove
+        # self.cache_k = torch.zeros(
+        #     (args.max_batch_size, args.max_seq_len, self.n_local_heads, self.head_dim)
+        # ).cuda()
+        # self.cache_v = torch.zeros(
+        #     (args.max_batch_size, args.max_seq_len, self.n_local_heads, self.head_dim)
+        # ).cuda()
 
     def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]):
         bsz, seqlen, _ = x.shape
-        xq, xk, xv = self.in_proj(x).chunk(3, dim=-1)
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
@@ -146,16 +119,28 @@ class Attention(nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        output = self.attn_fn(
-            xq.to(xv.dtype), 
-            xk.to(xv.dtype), 
-            xv, 
-            is_causal=True
-        )
+        # self.cache_k = self.cache_k.to(xq)
+        # self.cache_v = self.cache_v.to(xq)
 
-        output = output.view(bsz, seqlen, -1)
+        # self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        # self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
 
-        return self.out_proj(output)
+        keys = xk[:bsz, : start_pos + seqlen]
+        values = xv[:bsz, : start_pos + seqlen]
+
+        xq = xq.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, slen, cache_len + slen)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, slen, head_dim)
+        output = output.transpose(
+            1, 2
+        ).contiguous().view(bsz, seqlen, -1)
+
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
@@ -211,7 +196,7 @@ class Transformer(nn.Module):
         self.n_layers = params.n_layers
 
         self.tok_embeddings = nn.Embedding(
-            params.vocab_size, params.dim  # Change to original model (removed placeholder lambda x : x)
+            params.vocab_size, params.dim
         )
 
         self.layers = torch.nn.ModuleList()
@@ -220,7 +205,7 @@ class Transformer(nn.Module):
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(
-            params.dim, params.vocab_size, bias=False  # Change to original model (removed placeholder lambda x : x)
+            params.dim, params.vocab_size, bias=False
         )
 
         self.freqs_cis = precompute_freqs_cis(
@@ -230,28 +215,21 @@ class Transformer(nn.Module):
     # Our slightly modified version of the forward function for training
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
-        # print(f"seqlen: {seqlen}")
         h = self.tok_embeddings(tokens)
-        # print(f"shape of h at beginning: {h.shape}")
-        # print(f"h at the beginning of the forward func: {h}")
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
-        # print(f"freqs_cis: {freqs_cis}")
 
         mask = None
         if seqlen > 1:
             mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=tokens.device)
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
-        # print(f"mask: {mask}")
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        # print(f"what is h? {h}")
         # TODO: Ask if this is right.
         output = self.output(h)  # unlike with inference, we pass in the entire h to compute logits for all tokens in our sequence in all of our batches
                                  # (i.e. we're passing in h of shape [batch_size, seq_len, feature_embedding_dim])
-        # print(f"output inside the transformer: {output}")
         return output.float()
 
     # @torch.inference_mode()

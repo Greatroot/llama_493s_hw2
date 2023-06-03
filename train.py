@@ -61,23 +61,23 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
   model.train()
   # We set reduction=None to avoid computing mean on losses (so we get raw losses), this allows us to
   # zero any losses that occured from padding before reducing our 
-  criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id) # Is softmax + negative log likelihood
-#   optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=decay)
+  criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_dataloader))
+
+  train_losses = []
+  val_losses = []
   
+  print(f"GPU memory allocated before starting training loop: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
 #   print(f"GPU memory: {torch.cuda.memory_summary()}")
-  print(f"GPU memory used during model allocation: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
 
   for epoch in range(epochs):
-    model.train()
-    train_losses = []
-    val_losses = []
     total_loss = 0.
     log_interval = 1  # TODO: change back to 100
     start_time = time.time()
     # print(f"GPU memory: {torch.cuda.memory_summary()}")
     print(f"GPU memory allocated at beginning of epoch: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
+    # print(f"GPU memory: {torch.cuda.memory_summary()}")
     for i, batch in enumerate(train_dataloader):
         # get the inputs; data is a list of string prompts
         # print(f"batch = {batch}")
@@ -94,7 +94,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         total_len = min(params.max_seq_len, max_prompt_size)
 
         # Pad our batch of sample tokens so that they are all the same length
-        tokens = torch.full((batch_size, total_len), tokenizer.eos_id).to(device).long()
+        tokens = torch.full((batch_size, total_len), tokenizer.eos_id)
         for k, t in enumerate(prompt_tokens):
             # k represents the kth prompt and t represents the position in that sentence
             if len(t) > params.max_seq_len:
@@ -108,10 +108,10 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         # zero the parameter gradients
         optimizer.zero_grad()
 
-        logits = model.forward(inputs, 0)
+        logits = model.forward(inputs.to(device).long(), 0)
 
         # Calculate a mask for the loss to mask out loss calculated on target tokens that are just padding (we want to ignore these)
-        loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1))
+        loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1).to(device).long())
 
         loss.backward()  # autograd magic, computes all the partial derivatives
 
@@ -128,6 +128,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
             ppl = math.exp(cur_loss)
             # print(f"GPU memory: {torch.cuda.memory_summary()}")
             print(f"GPU memory allocated at end of batch: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
+            # print(f"GPU memory: {torch.cuda.memory_summary()}")
 
             print(f'| epoch {epoch:3d} | {i:5d}/{len(train_dataloader):5d} batches | '
                   f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
@@ -141,9 +142,7 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
 
     # At the end of every epoch, test our model against our validation data
     running_vloss = 0.0
-    model.eval()
-    print(f"GPU memory used during model allocation: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
-    # torch.cuda.empty_cache()
+    print(f"GPU memory before running validation loop: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
     with torch.no_grad():
         for i, vdata in enumerate(val_dataloader):
             prompts = vdata['text']
@@ -176,19 +175,20 @@ def train(model, tokenizer, train_dataloader, val_dataloader, epochs=1, lr=0.01,
         print('Avg LOSS train {} valid {}'.format(total_loss / len(train_dataloader), avg_vloss))
 
     print(f"GPU memory allocated right before saving: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
+    # print(f"GPU memory: {torch.cuda.memory_summary()}")
 
     # save a checkpoint
     # filename format: {epoch}_{training loss}_{validation loss}.pt
-    print(f"save path: {os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_dataloader), avg_vloss))}")
     if save_path is not None:
         torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': avg_vloss,
-                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_dataloader), avg_vloss)))
+                # 'loss': avg_vloss,
+                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_dataloader), loss)))
         
     print(f"GPU memory allocated after saving: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
+    # print(f"GPU memory: {torch.cuda.memory_summary()}")
 
   return train_losses, val_losses
 
@@ -205,14 +205,14 @@ def main(
 
     # Model params
     dim: int = 128  # Originally 512
-    n_layers: int = 2  # originally 8
-    n_heads: int = 2  # originally 8
+    n_layers: int = 1  # originally 8
+    n_heads: int = 1  # originally 8
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     norm_eps: float = 1e-5
 
     epochs = 10
-    batch_size: int = 32
+    batch_size: int = 16
     lr=3.0e-3
 
     # Hyperparams for LLama Transformer implementation
@@ -243,7 +243,7 @@ def main(
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # print(f"GPU memory: {torch.cuda.memory_summary()}")
-    print(f"GPU memory used during model allocation: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
+    print(f"GPU memory used after dataloaders: {torch.cuda.memory_allocated(0) / 1e9}: %fGB")
 
 
 
