@@ -107,7 +107,7 @@ def eval(model, tokenizer, test_loader):
     return losses
 
 
-def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
+def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.001, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
   model.to(device)
   model.train()
   criterion = nn.CrossEntropyLoss()
@@ -153,7 +153,7 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
             ppl = math.exp(cur_loss)
 
             print(f'| epoch {epoch:3d} | {i:5d}/{len(train_loader):5d} batches | '
-                  f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
+                  f'lr {lr:03.6f} | ms/batch {ms_per_batch:5.2f} | '
                   f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
             fine_train_losses.append(cur_loss)
             epoch_train_loss = 0
@@ -187,7 +187,7 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.ylabel('Loss')
   plt.xscale('log')
   plt.suptitle("More Fine-grain Training Losses")
-  plt.title(f"Model Size: {count_parameters(model)} | CosineAnnealingLR max_lr=3e-4 | n_layers=3 | n_heads=4 | train_sze=10000")
+  plt.title(f"Model Size: {count_parameters(model)} | train_sze=10000 | dim_size={params.dim} | seq_len={params.max_seq_len}")
   plt.legend()
   plt.savefig(f'{args.save_path}/fine_grain_train_losses.png')
 
@@ -198,7 +198,7 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.ylabel('Loss')
   plt.xscale('log')
   plt.suptitle("Train and Validation Losses per Epoch")
-  plt.title(f"Model Size: {count_parameters(model)} | CosineAnnealingLR max_lr=3e-4 | n_layers=3 | n_heads=4 | train_sze=10000")
+  plt.title(f"Model Size: {count_parameters(model)} | train_sze=10000 | dim_size={params.dim} | seq_len={params.max_seq_len}")
   plt.legend()
   plt.savefig(f'{args.save_path}/final_epoch_losses.png')
   
@@ -213,7 +213,7 @@ def main():
         raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-    lr=3.0e-4
+    lr=0.0008
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
         n_layers=3,
