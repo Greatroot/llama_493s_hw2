@@ -31,7 +31,7 @@ parser.add_argument('save_path', type=str, help='Path to folder to save results'
 parser.add_argument('train_path', type=str, help='Path to the data file you want to train on')
 parser.add_argument('val_path', type=str, help='Path to the data file you want to validate on')
 parser.add_argument('--ckpt_path', type=str, help='Path to checkpoint if you want to load one in')
-parser.add_argument('--seq_len', type=int, default=256, help='The max number of tokens per sequence')
+parser.add_argument('--max_seq_len', type=int, default=256, help='The max number of tokens per sequence')
 parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
 parser.add_argument('--num_epochs', type=int, default=7, help='Number of epochs to train for')
 parser.add_argument('--dim_size', type=int, default=256, help='Embedding dimension for the Embedder in our Transformer')
@@ -76,19 +76,19 @@ def load(
 def eval(model, tokenizer, test_loader):
     losses = 0.
     with torch.no_grad():
-        criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
+        criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id)
         for i, vdata in tqdm.tqdm(enumerate(test_loader), total=len(test_loader)):
             prompts = vdata['text']
             params = model.params
             batch_size = len(prompts)
 
-            prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+            prompt_tokens = [tokenizer.encode(x, bos=True, eos=True) for x in prompts]
             max_prompt_size = max([len(t) for t in prompt_tokens])
 
             total_len = min(params.max_seq_len, max_prompt_size)
 
             # Pad our batch of sample tokens so that they are all the same length
-            tokens = torch.full((batch_size, total_len), tokenizer.eos_id).to(device).long()
+            tokens = torch.full((batch_size, total_len), tokenizer.pad_id).to(device).long()
             for k, t in enumerate(prompt_tokens):
                 # k represents the kth prompt and t represents the position in that sentence
                 if len(t) > params.max_seq_len:
@@ -107,11 +107,11 @@ def eval(model, tokenizer, test_loader):
     return losses
 
 
-def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
+def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
   model.to(device)
   model.train()
-#   criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
-  criterion = nn.CrossEntropyLoss()
+  pad_id = 0
+  criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id)
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_loader))
 
@@ -122,26 +122,28 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   for epoch in range(epochs):
     train_loss = 0.
     epoch_train_loss = 0.
-    log_interval = 100  # TODO: change back to 100
+    log_interval = 100
     start_time = time.time()
     for i, batch in enumerate(train_loader):
         # get the inputs; batch is a list of string prompts. We convert these to a padded batch of 
         # tokens before passing into our model.
         prompts = batch['text']
         params = model.params
-        print(f"prompts: {prompts}")
 
-        flattened_prompt_tokens = []
-        for prompt in prompts:
-            flattened_prompt_tokens.extend(tokenizer.encode(prompt, bos=True, eos=True))
-        
-        print(f"prompt_tokens = {flattened_prompt_tokens}")
-        print(f"prompt_tokens len = {len(flattened_prompt_tokens)}")
-        
-        batched_tokens = torch.FloatTensor(flattened_prompt_tokens).reshape((batch_size, seq_len))
-        
-        print(f"batched_tokens shape = {batched_tokens.shape}")
-        print(f"batched_tokens = {batched_tokens}")
+        # Dim of prompt_tokens: (batch_size, len_of_each_prompt)
+        prompt_tokens = [tokenizer.encode(x, bos=True, eos=True) for x in prompts]
+        max_prompt_size = max([len(t) for t in prompt_tokens])
+
+        total_len = min(params.max_seq_len, max_prompt_size)
+
+        # Pad our batch of sample tokens so that they are all the same length
+        tokens = torch.full((batch_size, total_len), tokenizer.pad_id)
+        for k, t in enumerate(prompt_tokens):
+            # k represents the kth prompt and t represents the position in that sentence
+            if len(t) > params.max_seq_len:
+                tokens[k, :] = torch.tensor(t[:total_len]).long()
+            else:
+                tokens[k, : len(t)] = torch.tensor(t).long()
         
         inputs = tokens[:, :-1]
         targets = tokens[:, 1:]
@@ -189,14 +191,14 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
     # filename format: {epoch}_{training loss}_{validation loss}.pt
     print(f"model_params: {model.params}")
     if save_path is not None:
-        torch.save(model.state_dict(), f'{save_path}/model_epoch_{epoch}_{train_loss / len(train_loader):.3}_{val_loss:.3}.pt')
-        # torch.save({
-        #         'model_params': model.params,
-        #         'epoch': epoch,
-        #         'model_state_dict': model.state_dict(),
-        #         'optimizer_state_dict': optimizer.state_dict(),
-        #         'loss': val_loss,
-        #         }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, train_loss / len(train_loader), val_loss)))
+        # torch.save(model.state_dict(), f'{save_path}/model_epoch_{epoch}_{train_loss / len(train_loader):.3}_{val_loss:.3}.pt')
+        torch.save({
+                'model_params': model.params,
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': val_loss,
+                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, train_loss / len(train_loader), val_loss)))
 
 
   # Create a plot using plt of the total_losses and the epoch_validation and save it to args.save_path
@@ -235,7 +237,7 @@ def main():
         dim=args.dim_size,
         n_layers=2,
         n_heads=2,
-        max_seq_len=args.seq_len,
+        max_seq_len=args.max_seq_len,
         multiple_of=256, # make SwiGLU hidden layer size multiple of large power of 2
         norm_eps=1e-5
     )
@@ -249,7 +251,7 @@ def main():
           f"\tembedding dim = {args.dim_size}"
           f"\tnum_layers = {model_args.n_layers}"
           f"\tn_heads = {model_args.n_heads}"
-          f"\tseq_len = {args.seq_len}"
+          f"\tmax_seq_len = {args.max_seq_len}"
           f"\tnum_params (size of model) = {model_size}"
           )
 

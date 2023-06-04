@@ -101,14 +101,6 @@ class Attention(nn.Module):
             bias=False
         )
 
-        # TODO: Remove
-        # self.cache_k = torch.zeros(
-        #     (args.max_batch_size, args.max_seq_len, self.n_local_heads, self.head_dim)
-        # ).cuda()
-        # self.cache_v = torch.zeros(
-        #     (args.max_batch_size, args.max_seq_len, self.n_local_heads, self.head_dim)
-        # ).cuda()
-
     def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]):
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -212,6 +204,7 @@ class Transformer(nn.Module):
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
 
+    """ FOR TRAINING: Comment out the below forward function and use this one below """
     # Our slightly modified version of the forward function for training
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
@@ -227,11 +220,11 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        # TODO: Ask if this is right.
         output = self.output(h)  # unlike with inference, we pass in the entire h to compute logits for all tokens in our sequence in all of our batches
                                  # (i.e. we're passing in h of shape [batch_size, seq_len, feature_embedding_dim])
         return output.float()
 
+    """ FOR INFERENCE: Comment out the above forward function and use this one below """
     # @torch.inference_mode()
     # def forward(self, tokens: torch.Tensor, start_pos: int):
     #     _bsz, seqlen = tokens.shape

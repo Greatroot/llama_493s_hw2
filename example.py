@@ -8,6 +8,7 @@ import torch
 import fire
 import time
 import json
+import argparse
 
 from pathlib import Path
 
@@ -15,43 +16,49 @@ from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
+parser = argparse.ArgumentParser(description='Training code for transformer')
+parser.add_argument('tokenizer_path', type=str, help='Path to tokeinizer')
+parser.add_argument('ckpt_path', type=str, help='Path to checkpoint for a pretrained LLaMA model')
+parser.add_argument('--max_seq_len', type=int, default=256, help='The max number of tokens per sequence')
+parser.add_argument('--max_batch_size', type=int, default=16, help='Training batch size')
 
-# Removing this
-# def setup_model_parallel() -> Tuple[int, int]:
-#     local_rank = int(os.environ.get("LOCAL_RANK", -1))
-#     world_size = int(os.environ.get("WORLD_SIZE", -1))
-
-#     torch.distributed.init_process_group("nccl")
-#     initialize_model_parallel(world_size)
-#     torch.cuda.set_device(local_rank)
-
-#     # seed must be the same in all processes
-#     torch.manual_seed(1)
-#     return local_rank, world_size
+args = parser.parse_args()
 
 
 def load(
-    ckpt_dir: str,
+    ckpt_path: str,
     tokenizer_path: str,
     max_seq_len: int,
     max_batch_size: int,
 ) -> LLaMA:
     start_time = time.time()
-    ckpt_path = sorted(Path(ckpt_dir).glob("*.pt"))
     print("Loading")
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
-    with open(Path(ckpt_dir) / "params.json", "r") as f:
-        params = json.loads(f.read())
+    print(f"os.getcwd(): {os.getcwd()}")
+    checkpoint = torch.load(ckpt_path)
 
-    model_args: ModelArgs = ModelArgs(
-        max_seq_len=max_seq_len, max_batch_size=max_batch_size, **params
-    )
+    # print(f"checkpoint['model_params'] = {checkpoint['model_params']}")
+    if 'model_params' in checkpoint:
+        print(f"are we here?")
+        model_args: ModelArgs = checkpoint['model_params']
+    else:
+        print(f"or here?")
+        model_args: ModelArgs = ModelArgs(
+            dim=256,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=args.max_seq_len,
+            multiple_of=256, # make SwiGLU hidden layer size multiple of large power of 2
+            norm_eps=1e-5
+        )
     tokenizer = Tokenizer(model_path=tokenizer_path)
     model_args.vocab_size = tokenizer.n_words
     torch.set_default_tensor_type(torch.cuda.HalfTensor)
     model = Transformer(model_args)
     torch.set_default_tensor_type(torch.FloatTensor)
-    model.load_state_dict(checkpoint, strict=False)
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    else:
+        model.load_state_dict(checkpoint, strict=False)
 
     generator = LLaMA(model, tokenizer)
     print(f"Loaded in {time.time() - start_time:.2f} seconds")
@@ -66,12 +73,8 @@ def main(
     max_seq_len: int = 512,
     max_batch_size: int = 32,
 ):
-    local_rank, world_size = setup_model_parallel()
-    if local_rank > 0:
-        sys.stdout = open(os.devnull, "w")
-
     generator = load(
-        ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
+        ckpt_dir, tokenizer_path, max_seq_len, max_batch_size
     )
 
     prompts = [
@@ -111,4 +114,4 @@ cheese =>""",
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    main(ckpt_dir=args.ckpt_path, tokenizer_path=args.tokenizer_path)
