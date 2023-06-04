@@ -24,10 +24,7 @@ class Tokenizer:
         self.bos_id: int = self.sp_model.bos_id()
         self.eos_id: int = self.sp_model.eos_id()
         # self.pad_id: int = self.sp_model.pad_id()
-        self.pad_id: int = 3
-        print(f"bos = {self.bos_id}")
-        print(f"eos = {self.eos_id}")
-        print(f"pad = {self.pad_id}")
+        self.pad_id: int = 3  # This was a change we made because by defualt, self.sp_model.pad_id() is -1, which cannot be passed into nn.Embedding()
         logger.info(
             f"#words: {self.n_words} - BOS ID: {self.bos_id} - EOS ID: {self.eos_id}"
         )

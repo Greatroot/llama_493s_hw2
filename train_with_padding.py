@@ -232,7 +232,7 @@ def main():
         raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-    lr=3.0e-3
+    lr=3.0e-4
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
         n_layers=2,

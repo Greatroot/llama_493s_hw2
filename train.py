@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 from datasets import load_dataset
+from training_utils import PileDataset
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
@@ -31,10 +32,10 @@ parser.add_argument('save_path', type=str, help='Path to folder to save results'
 parser.add_argument('train_path', type=str, help='Path to the data file you want to train on')
 parser.add_argument('val_path', type=str, help='Path to the data file you want to validate on')
 parser.add_argument('--ckpt_path', type=str, help='Path to checkpoint if you want to load one in')
-parser.add_argument('--seq_len', type=int, default=256, help='The max number of tokens per sequence')
+parser.add_argument('--seq_len', type=int, default=512, help='The max number of tokens per sequence')
 parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
 parser.add_argument('--num_epochs', type=int, default=7, help='Number of epochs to train for')
-parser.add_argument('--dim_size', type=int, default=256, help='Embedding dimension for the Embedder in our Transformer')
+parser.add_argument('--dim_size', type=int, default=128, help='Embedding dimension for the Embedder in our Transformer')
 
 args = parser.parse_args()
 
@@ -43,6 +44,23 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
+
+
+def batchify(data, bsz):
+    """Divides the data into bsz separate sequences, removing extra elements
+    that wouldn't cleanly fit.
+
+    Args:
+        data: Tensor, shape [N]
+        bsz: int, batch size
+
+    Returns:
+        Tensor of shape [N // bsz, bsz]
+    """
+    seq_len = data.size(0) // bsz
+    data = data[:seq_len * bsz]
+    data = data.view(bsz, seq_len).t().contiguous()
+    return data.to(device)
 
 
 def load(
@@ -76,28 +94,10 @@ def load(
 def eval(model, tokenizer, test_loader):
     losses = 0.
     with torch.no_grad():
-        criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
-        for i, vdata in tqdm.tqdm(enumerate(test_loader), total=len(test_loader)):
-            prompts = vdata['text']
+        criterion = nn.CrossEntropyLoss()
+        for i, (inputs, targets) in tqdm.tqdm(enumerate(test_loader), total=len(test_loader)):
+            inputs, targets = inputs.to(device), targets.to(device)
             params = model.params
-            batch_size = len(prompts)
-
-            prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in prompts]
-            max_prompt_size = max([len(t) for t in prompt_tokens])
-
-            total_len = min(params.max_seq_len, max_prompt_size)
-
-            # Pad our batch of sample tokens so that they are all the same length
-            tokens = torch.full((batch_size, total_len), tokenizer.eos_id).to(device).long()
-            for k, t in enumerate(prompt_tokens):
-                # k represents the kth prompt and t represents the position in that sentence
-                if len(t) > params.max_seq_len:
-                    tokens[k, :] = torch.tensor(t[:total_len]).long()
-                else:
-                    tokens[k, : len(t)] = torch.tensor(t).long()
-            
-            inputs = tokens[:, :-1]
-            targets = tokens[:, 1:]
 
             outputs = model.forward(inputs, 0)
 
@@ -124,35 +124,19 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
     epoch_train_loss = 0.
     log_interval = 100  # TODO: change back to 100
     start_time = time.time()
-    for i, batch in enumerate(train_loader):
+    for i, (inputs, targets) in enumerate(train_loader):
         # get the inputs; batch is a list of string prompts. We convert these to a padded batch of 
         # tokens before passing into our model.
-        prompts = batch['text']
+        inputs, targets = inputs.to(device), targets.to(device)
         params = model.params
-        print(f"prompts: {prompts}")
-
-        flattened_prompt_tokens = []
-        for prompt in prompts:
-            flattened_prompt_tokens.extend(tokenizer.encode(prompt, bos=True, eos=True))
-        
-        print(f"prompt_tokens = {flattened_prompt_tokens}")
-        print(f"prompt_tokens len = {len(flattened_prompt_tokens)}")
-        
-        batched_tokens = torch.FloatTensor(flattened_prompt_tokens).reshape((batch_size, seq_len))
-        
-        print(f"batched_tokens shape = {batched_tokens.shape}")
-        print(f"batched_tokens = {batched_tokens}")
-        
-        inputs = tokens[:, :-1]
-        targets = tokens[:, 1:]
             
         # zero the parameter gradients
         optimizer.zero_grad()
 
-        logits = model.forward(inputs.to(device).long(), 0)
+        logits = model.forward(inputs, 0)
 
         # Calculate a mask for the loss to mask out loss calculated on target tokens that are just padding (we want to ignore these)
-        loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1).to(device).long())
+        loss = criterion(logits.reshape(-1, params.vocab_size), targets.reshape(-1))
 
         loss.backward()  # autograd magic, computes all the partial derivatives
 
@@ -163,8 +147,8 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
         train_loss += loss.item()
         epoch_train_loss += loss.item()
         if i % log_interval == 0 and i > 0:
-            lr = scheduler.get_last_lr()[0]
-            # lr = get_lr(optimizer)
+            # prev_lr = scheduler.get_last_lr()[0]
+            lr = scheduler.get_lr()[0]
             ms_per_batch = (time.time() - start_time) * 1000 / log_interval
             cur_loss = epoch_train_loss / log_interval
             ppl = math.exp(cur_loss)
@@ -175,11 +159,9 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
             fine_train_losses.append(cur_loss)
             epoch_train_loss = 0
             start_time = time.time()
-        
-        if i != 0 and i % 3000 == 0:
-          scheduler.step()
 
-    # At the end of every epoch, test our model against our validation data
+    # At the end of every epoch, test our model against our validation data and decrease learning rate via scheduler
+    scheduler.step()
     val_loss = eval(model, tokenizer, val_loader)
     val_losses.append(val_loss)
     train_losses.append(train_loss / len(train_loader))
@@ -189,14 +171,14 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
     # filename format: {epoch}_{training loss}_{validation loss}.pt
     print(f"model_params: {model.params}")
     if save_path is not None:
-        torch.save(model.state_dict(), f'{save_path}/model_epoch_{epoch}_{train_loss / len(train_loader):.3}_{val_loss:.3}.pt')
-        # torch.save({
-        #         'model_params': model.params,
-        #         'epoch': epoch,
-        #         'model_state_dict': model.state_dict(),
-        #         'optimizer_state_dict': optimizer.state_dict(),
-        #         'loss': val_loss,
-        #         }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, train_loss / len(train_loader), val_loss)))
+        # torch.save(model.state_dict(), f'{save_path}/model_epoch_{epoch}_{train_loss / len(train_loader):.3}_{val_loss:.3}.pt') TODO: Remove
+        torch.save({
+                'model_params': model.params,
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': val_loss,
+                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, train_loss / len(train_loader), val_loss)))
 
 
   # Create a plot using plt of the total_losses and the epoch_validation and save it to args.save_path
@@ -233,8 +215,8 @@ def main():
     lr=3.0e-3
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
-        n_layers=2,
-        n_heads=2,
+        n_layers=3,
+        n_heads=4,
         max_seq_len=args.seq_len,
         multiple_of=256, # make SwiGLU hidden layer size multiple of large power of 2
         norm_eps=1e-5
@@ -255,8 +237,8 @@ def main():
 
     # Load in our data and split it into train, val, test datasets
     # train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=args.data_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
-    train_dataset = load_dataset('json', data_files=args.train_path, split='train')
-    val_dataset = load_dataset('json', data_files=args.val_path, split='train')
+    train_dataset = PileDataset(path_to_jsonl=args.train_path, tokenizer=tokenizer, seq_len=args.seq_len)
+    val_dataset = PileDataset(path_to_jsonl=args.val_path, tokenizer=tokenizer, seq_len=args.seq_len)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
