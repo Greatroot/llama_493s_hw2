@@ -110,7 +110,6 @@ def eval(model, tokenizer, test_loader):
 def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
   model.to(device)
   model.train()
-#   criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
   criterion = nn.CrossEntropyLoss()
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_loader))
@@ -187,7 +186,8 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
   plt.xscale('log')
-  plt.title("More Fine-grain Training Losses")
+  plt.suptitle("More Fine-grain Training Losses")
+  plt.title(f"Model Size: {count_parameters(model)} | CosineAnnealingLR max_lr=3e-4 | n_layers=3 | n_heads=4 | train_sze=10000")
   plt.legend()
   plt.savefig(f'{args.save_path}/fine_grain_train_losses.png')
 
@@ -197,7 +197,8 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
   plt.xscale('log')
-  plt.title("Train and Validation Losses per Epoch")
+  plt.suptitle("Train and Validation Losses per Epoch")
+  plt.title(f"Model Size: {count_parameters(model)} | CosineAnnealingLR max_lr=3e-4 | n_layers=3 | n_heads=4 | train_sze=10000")
   plt.legend()
   plt.savefig(f'{args.save_path}/final_epoch_losses.png')
   
@@ -212,7 +213,7 @@ def main():
         raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-    lr=3.0e-3
+    lr=3.0e-4
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
         n_layers=3,
