@@ -28,7 +28,8 @@ from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 parser = argparse.ArgumentParser(description='Training code for transformer')
 parser.add_argument('tokenizer_path', type=str, help='Path to tokeinizer')
 parser.add_argument('save_path', type=str, help='Path to folder to save results')
-parser.add_argument('data_path', type=str, help='Path to the data file you want to train on')
+parser.add_argument('train_path', type=str, help='Path to the data file you want to train on')
+parser.add_argument('val_path', type=str, help='Path to the data file you want to validate on')
 parser.add_argument('--ckpt_path', type=str, help='Path to checkpoint if you want to load one in')
 parser.add_argument('--max_seq_len', type=int, default=256, help='The max number of tokens per sequence')
 parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
@@ -114,12 +115,13 @@ def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0
   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_loader))
 
   train_losses = []
+  fine_train_losses = []
   val_losses = []
 
   for epoch in range(epochs):
-    total_loss = 0.
-    batch_loss = 0.
-    log_interval = 1  # TODO: change back to 100
+    train_loss = 0.
+    epoch_train_loss = 0.
+    log_interval = 100  # TODO: change back to 100
     start_time = time.time()
     for i, batch in enumerate(train_loader):
         # get the inputs; batch is a list of string prompts. We convert these to a padded batch of 
@@ -159,18 +161,20 @@ def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0
         optimizer.step() # takes a step in negative gradient direction
 
         # Total loss over epoch and print statistics
-        batch_loss += loss.item()
+        train_loss += loss.item()
+        epoch_train_loss += loss.item()
         if i % log_interval == 0 and i > 0:
             lr = scheduler.get_last_lr()[0]
             # lr = get_lr(optimizer)
             ms_per_batch = (time.time() - start_time) * 1000 / log_interval
-            cur_loss = batch_loss / log_interval
+            cur_loss = epoch_train_loss / log_interval
             ppl = math.exp(cur_loss)
 
             print(f'| epoch {epoch:3d} | {i:5d}/{len(train_loader):5d} batches | '
                   f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
                   f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
-            batch_loss = 0
+            fine_train_losses.append(cur_loss)
+            epoch_train_loss = 0
             start_time = time.time()
         
         if i != 0 and i % 3000 == 0:
@@ -179,27 +183,40 @@ def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0
     # At the end of every epoch, test our model against our validation data
     val_loss = eval(model, tokenizer, val_loader)
     val_losses.append(val_loss)
-    print('Avg LOSSES | train loss: {} | valid loss: {}'.format(total_loss / len(train_loader), val_loss))
+    train_losses.append(train_loss / len(train_loader))
+    print('Avg LOSSES | train loss: {} | valid loss: {}'.format(train_loss / len(train_loader), val_loss))
 
     # save a checkpoint
     # filename format: {epoch}_{training loss}_{validation loss}.pt
     if save_path is not None:
         torch.save({
+                'model_params': model.params,
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': val_loss,
-                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, total_loss / len(train_loader), val_loss)))
+                }, os.path.join(save_path, '{}_{:.3}_{:.3}.pt'.format(epoch, train_loss / len(train_loader), val_loss)))
 
 
   # Create a plot using plt of the total_losses and the epoch_validation and save it to args.save_path
+  plt.cla(); plt.clf()
+  plt.plot(fine_train_losses, label='train_loss', color='blue')
+  plt.xlabel('Epochs')
+  plt.ylabel('Loss')
+  plt.xscale('log')
+  plt.title("More Fine-grain Training Losses")
+  plt.legend()
+  plt.savefig(f'{args.save_path}/fine_grain_train_losses.png')
+
   plt.cla(); plt.clf()
   plt.plot(train_losses, label='train_loss', color='blue')
   plt.plot(val_losses, label='val_loss', color='orange')
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
+  plt.xscale('log')
+  plt.title("Train and Validation Losses per Epoch")
   plt.legend()
-  plt.savefig(f'{args.save_path}/final_losses.png')
+  plt.savefig(f'{args.save_path}/final_epoch_losses.png')
   
   return train_losses, val_losses
 
@@ -226,28 +243,33 @@ def main():
         model_args, args.tokenizer_path, args.ckpt_path
     )
     
+    model_size = count_parameters(model)
     print(f"Model Summary: "
           f"\tembedding dim = {args.dim_size}"
           f"\tnum_layers = {model_args.n_layers}"
           f"\tn_heads = {model_args.n_heads}"
           f"\tmax_seq_len = {args.max_seq_len}"
-          f"\tnum_params (size of model) = {count_parameters(model)}"
+          f"\tnum_params (size of model) = {model_size}"
           )
 
     # Load in our data and split it into train, val, test datasets
-    train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=args.data_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+    # train_dataset, val_dataset, test_dataset = load_dataset('json', data_files=args.data_path, split=['train[:80%]', 'train[-20%:-10%]', 'train[-10%:]'])
+    train_dataset = load_dataset('json', data_files=args.train_path, split='train')
+    val_dataset = load_dataset('json', data_files=args.val_path, split='train')
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     # Train the model
     start_time = time.time()
-    train_losses, val_losses = train(model, tokenizer, train_dataloader, val_dataloader, lr=lr, epochs=args.num_epochs, batch_size=args.batch_size, save_path=args.save_path)
+    train_losses, val_losses = train(model, tokenizer, train_loader, val_loader, lr=lr, epochs=args.num_epochs, batch_size=args.batch_size, save_path=args.save_path)
     end_time = time.time()
-    print(f"Training on 3090 took {end_time - start_time} seconds")
-    print(f"Final validation loss on model was: {val_losses[-1]}")
-    print(f"train_losses = {train_losses}")
-    print(f"val_losses = {val_losses}")
+    with open(f"{model_size}_10000_train_summary.txt", "a") as f:
+        print(f"Training on 3090 took {end_time - start_time} seconds")
+        print(f"num of model params (model size): {model_size}")
+        print(f"Final validation loss on model was: {val_losses[-1]}")
+        print(f"\ntrain_losses = {train_losses}")
+        print(f"\nval_losses = {val_losses}")
 
 
 if __name__ == "__main__":
