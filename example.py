@@ -3,23 +3,18 @@
 
 from typing import Tuple
 import os
-import sys
 import torch
-import fire
 import time
-import json
 import argparse
-
-from pathlib import Path
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
-from llama import ModelArgs, Transformer, Tokenizer, LLaMA
+from llama import ModelArgs, TransformerInference, Tokenizer, LLaMA
 
 parser = argparse.ArgumentParser(description='Training code for transformer')
 parser.add_argument('tokenizer_path', type=str, help='Path to tokeinizer')
 parser.add_argument('ckpt_path', type=str, help='Path to checkpoint for a pretrained LLaMA model')
-parser.add_argument('--max_seq_len', type=int, default=256, help='The max number of tokens per sequence')
+parser.add_argument('--max_seq_len', type=int, default=512, help='The max number of tokens per sequence')
 parser.add_argument('--max_batch_size', type=int, default=16, help='Training batch size')
 
 args = parser.parse_args()
@@ -33,15 +28,12 @@ def load(
 ) -> LLaMA:
     start_time = time.time()
     print("Loading")
-    print(f"os.getcwd(): {os.getcwd()}")
     checkpoint = torch.load(ckpt_path)
 
     # print(f"checkpoint['model_params'] = {checkpoint['model_params']}")
     if 'model_params' in checkpoint:
-        print(f"are we here?")
         model_args: ModelArgs = checkpoint['model_params']
     else:
-        print(f"or here?")
         model_args: ModelArgs = ModelArgs(
             dim=256,
             n_layers=2,
@@ -53,7 +45,7 @@ def load(
     tokenizer = Tokenizer(model_path=tokenizer_path)
     model_args.vocab_size = tokenizer.n_words
     torch.set_default_tensor_type(torch.cuda.HalfTensor)
-    model = Transformer(model_args)
+    model = TransformerInference(model_args)
     torch.set_default_tensor_type(torch.FloatTensor)
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)

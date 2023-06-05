@@ -1,13 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the GNU General Public License version 3.
 
-from typing import Tuple
 import os
-import sys
 import torch
-import fire
 import time
-import json
 import math
 import tqdm
 import argparse
@@ -21,7 +17,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
-from datasets import load_dataset
+# from datasets import load_dataset
 from training_utils import PileDataset
 
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
@@ -35,7 +31,7 @@ parser.add_argument('--ckpt_path', type=str, help='Path to checkpoint if you wan
 parser.add_argument('--seq_len', type=int, default=512, help='The max number of tokens per sequence')
 parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
 parser.add_argument('--num_epochs', type=int, default=7, help='Number of epochs to train for')
-parser.add_argument('--dim_size', type=int, default=128, help='Embedding dimension for the Embedder in our Transformer')
+parser.add_argument('--dim_size', type=int, default=256, help='Embedding dimension for the Embedder in our Transformer')
 
 args = parser.parse_args()
 
@@ -107,10 +103,9 @@ def eval(model, tokenizer, test_loader):
     return losses
 
 
-def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
+def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
   model.to(device)
   model.train()
-#   criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.eos_id)
   criterion = nn.CrossEntropyLoss()
   optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=decay)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(train_loader))
@@ -154,7 +149,7 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
             ppl = math.exp(cur_loss)
 
             print(f'| epoch {epoch:3d} | {i:5d}/{len(train_loader):5d} batches | '
-                  f'lr {lr:02.5f} | ms/batch {ms_per_batch:5.2f} | '
+                  f'lr {lr:03.6f} | ms/batch {ms_per_batch:5.2f} | '
                   f'loss {cur_loss:5.2f} | ppl {ppl:8.2f}')
             fine_train_losses.append(cur_loss)
             epoch_train_loss = 0
@@ -187,7 +182,8 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
   plt.xscale('log')
-  plt.title("More Fine-grain Training Losses")
+  plt.suptitle("More Fine-grain Training Losses")
+  plt.title(f"Model Size: {count_parameters(model)} | train_sze=10000 | dim_size={params.dim} | seq_len={params.max_seq_len}")
   plt.legend()
   plt.savefig(f'{args.save_path}/fine_grain_train_losses.png')
 
@@ -197,7 +193,8 @@ def train(model, tokenizer, train_loader, val_loader, seq_len=256, epochs=7, lr=
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
   plt.xscale('log')
-  plt.title("Train and Validation Losses per Epoch")
+  plt.suptitle("Train and Validation Losses per Epoch")
+  plt.title(f"Model Size: {count_parameters(model)} | train_sze=10000 | dim_size={params.dim} | seq_len={params.max_seq_len}")
   plt.legend()
   plt.savefig(f'{args.save_path}/final_epoch_losses.png')
   
@@ -212,11 +209,11 @@ def main():
         raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-    lr=3.0e-3
+    lr=0.001
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
-        n_layers=3,
-        n_heads=4,
+        n_layers=6,
+        n_heads=7,
         max_seq_len=args.seq_len,
         multiple_of=256, # make SwiGLU hidden layer size multiple of large power of 2
         norm_eps=1e-5
@@ -247,12 +244,17 @@ def main():
     start_time = time.time()
     train_losses, val_losses = train(model, tokenizer, train_loader, val_loader, lr=lr, epochs=args.num_epochs, batch_size=args.batch_size, save_path=args.save_path)
     end_time = time.time()
+    print(f"Training on 3090 took {end_time - start_time} seconds")
+    print(f"num of model params (model size): {model_size}")
+    print(f"Final validation loss on model was: {val_losses[-1]}")
+    print(f"\ntrain_losses = {train_losses}")
+    print(f"\nval_losses = {val_losses}")
     with open(f"{model_size}_10000_train_summary.txt", "a") as f:
-        print(f"Training on 3090 took {end_time - start_time} seconds")
-        print(f"num of model params (model size): {model_size}")
-        print(f"Final validation loss on model was: {val_losses[-1]}")
-        print(f"\ntrain_losses = {train_losses}")
-        print(f"\nval_losses = {val_losses}")
+        f.write(f"Training on 3080 took {end_time - start_time} seconds")
+        f.write(f"num of model params (model size): {model_size}")
+        f.write(f"Final validation loss on model was: {val_losses[-1]}")
+        f.write(f"\ntrain_losses = {train_losses}")
+        f.write(f"\nval_losses = {val_losses}")
 
 
 if __name__ == "__main__":

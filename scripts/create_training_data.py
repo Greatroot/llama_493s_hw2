@@ -9,7 +9,7 @@ import jsonlines
 # input_file = 'data/subset_data.jsonl'
 input_file = 'data/train_1000000.jsonl'
 # data_sizes = [10000, 100000, 1000000]
-data_sizes = [300000]
+data_sizes = [50000]
 
 
 lines_read = 0
