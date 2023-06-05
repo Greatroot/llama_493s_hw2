@@ -87,7 +87,7 @@ def load(
     return model, tokenizer
 
 
-def eval(model, tokenizer, test_loader):
+def eval(model, test_loader):
     losses = 0.
     with torch.no_grad():
         criterion = nn.CrossEntropyLoss()
@@ -103,11 +103,7 @@ def eval(model, tokenizer, test_loader):
     return losses
 
 
-<<<<<<< HEAD
-def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.01, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
-=======
 def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.001, beta1=0.9, beta2=0.95, decay=0.01, clip=1.0, batch_size=16, save_path=None):
->>>>>>> 440e957ccb4a5864d0738586aaf8f2669d2492fe
   model.to(device)
   model.train()
   criterion = nn.CrossEntropyLoss()
@@ -161,7 +157,7 @@ def train(model, tokenizer, train_loader, val_loader, epochs=7, lr=0.001, beta1=
 
     # At the end of every epoch, test our model against our validation data and decrease learning rate via scheduler
     scheduler.step()
-    val_loss = eval(model, tokenizer, val_loader)
+    val_loss = eval(model, val_loader)
     val_losses.append(val_loss)
     train_losses.append(train_loss / len(train_loader))
     print('Avg LOSSES | train loss: {} | valid loss: {}'.format(train_loss / len(train_loader), val_loss))
@@ -213,11 +209,7 @@ def main():
         raise ValueError(f"{args.save_path} is not a directory")
 
     # Model params
-<<<<<<< HEAD
     lr=0.001
-=======
-    lr=0.0008
->>>>>>> 440e957ccb4a5864d0738586aaf8f2669d2492fe
     model_args: ModelArgs = ModelArgs(
         dim=args.dim_size,
         n_layers=6,
