@@ -1,7 +1,6 @@
-# LLaMA 
+# Trainable LLaMA 
 
-This repository is intended as a minimal, hackable and readable example to load [LLaMA](https://ai.facebook.com/blog/large-language-model-llama-meta-ai/) ([arXiv](https://arxiv.org/abs/2302.13971v1)) models and run inference.
-In order to download the checkpoints and tokenizer, fill this [google form](https://forms.gle/jk851eBVbX1m5TAv5)
+This repository is Ben Kosa, Mike Violette, and Alessio Tosolini's trainable LLaMA code for CSE 493s, Homework 2. This code is largely based off of FaceBook Research's offical GitHub repository for the PyTorch LLaMA implementation, though altered to allow for training LLaMA from scratch. The original repository can be found here: [LLaMA GitHub](https://github.com/facebookresearch/llama). The original paper and article for LLaMA can be found here: [LLaMA](https://ai.facebook.com/blog/large-language-model-llama-meta-ai/) ([arXiv](https://arxiv.org/abs/2302.13971v1)).
 
 ## Setup
 
@@ -13,27 +12,41 @@ Then in this repository:
 ```
 pip install -e .
 ```
+You may also need to install tqdm, jsonlines, and matplotlib
+```
+conda install matplotlib tqdm
+```
+```
+conda install -c conda-forge jsonlines
+```
 
 ## Download
 
-Once your request is approved, you will receive links to download the tokenizer and model files.
-Edit the `download.sh` script with the signed url provided in the email to download the model weights and tokenizer.
+The `tokenizer.model` weights for the pretrained SentencePiece Tokenizer provided by Meta can be found within this repo, along with the final checkpoints for our best 20M parameter model and models trained during abolition testing.
+
+Download the data that we used for performing our abolition tests, along with training our best model and running validation here: [Download data here](https://drive.google.com/drive/folders/1dn8QlNtgwVzzgB5_fAF0n9-GEzHIaI5n?usp=sharing)
+
+Be sure to create a folder called `data` to store all data files in there. Data files come compressed as `.zst` files, so be sure to uncompress them with the `zstd -d` command before using them for training and validation. 
 
 ## Inference
 
-The provided `example.py` can be run on a single or multi-gpu node with `torchrun` and will output completions for two pre-defined prompts. Using `TARGET_FOLDER` as defined in `download.sh`:
+The provided `example.py` can be run on a single GPU node with `python` and will output completions for mutltiple pre-defined prompt. An example command to run the inference on a model checkpoint is shown below. Refer to the top of `example.py` to see all args that can be passed in.
 ```
-torchrun --nproc_per_node MP example.py --ckpt_dir $TARGET_FOLDER/model_size --tokenizer_path $TARGET_FOLDER/tokenizer.model
+python example.py ./tokenizer.model ./checkpoints/19_3.63_5.73.pt
+```
+```
+python example.py ./<PATH_TO_TOKENIZER_WEIGHTS>.model ./<PATH_TO_CHECKPOINT_FILE>.pt
 ```
 
-Different models require different MP values:
+## Training and Validation
 
-|  Model | MP |
-|--------|----|
-| 7B     | 1  |
-| 13B    | 2  |
-| 33B    | 4  |
-| 65B    | 8  |
+The provided `train.py` can be run on a single GPU node with `python` and will output completions for mutltiple pre-defined prompt. An example command to run the training and validation pipeline can be found below. Refer to the top of `train.py` to see all args that can be passed in.
+```
+python train.py tokenizer.model ./checkpoints ./data/train_100000.jsonl ./data/val_10000.jsonl --dim_size=256 --epochs=12
+```
+```
+python train.py ./<PATH_TO_PRETRAINED_TOKENIZER_WEIGHTS> ./<FILE_YOU_WANT_TO_SAVE_CHECKPOINTS> ./data/<DATA_FILE>.jsonl ./data/<VAL_FILE>.jsonl --dim_size=256 --epochs=12
+```
 
 ## FAQ
 
