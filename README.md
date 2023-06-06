@@ -22,7 +22,7 @@ conda install -c conda-forge jsonlines
 
 ## Download
 
-The `tokenizer.model` weights for the pretrained SentencePiece Tokenizer provided by Meta can be found within this repo, along with the final checkpoints for our best 20M parameter model and models trained during abolition testing.
+The `tokenizer.model` weights for the pretrained SentencePiece Tokenizer provided by Meta can be found within this repo. The final checkpoints for our best 20M parameter model and 8M and 20M models trained during abolition testing can be found [here]{https://drive.google.com/drive/folders/1kdPKNX2-aNuNTAVbHxEKlKGZX8WAzrs4?usp=sharing}.
 
 Download the data that we used for performing our abolition tests, along with training our best model and running validation here: [Download data here](https://drive.google.com/drive/folders/1dn8QlNtgwVzzgB5_fAF0n9-GEzHIaI5n?usp=sharing)
 
@@ -37,6 +37,8 @@ python example.py ./tokenizer.model ./checkpoints/19_3.63_5.73.pt
 ```
 python example.py ./<PATH_TO_TOKENIZER_WEIGHTS>.model ./<PATH_TO_CHECKPOINT_FILE>.pt
 ```
+
+To pass custom prompts into example.py for generative inference, simply add them as strings to the `prompts` list in the `main()` function in `example.py`.
 
 ## Training and Validation
 
